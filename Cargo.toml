@@ -7,3 +7,5 @@ edition = "2021"
 
 [dependencies]
 eframe = "0.20.1"
+image = "0.24.5"
+rfd = "0.10.0"
