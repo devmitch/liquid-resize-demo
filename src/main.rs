@@ -2,7 +2,7 @@ use std::sync::{Arc, Mutex};
 
 use eframe::egui;
 use egui_glow::CallbackFn;
-use glow::{NativeBuffer, NativeTexture, NativeVertexArray};
+use glow::{NativeBuffer, NativeShader, NativeTexture, NativeVertexArray};
 use image::DynamicImage;
 use rfd::FileDialog;
 
@@ -43,9 +43,12 @@ impl LiquidResizeApp {
     }
 
     fn draw_image(&self, ui: &mut egui::Ui) {
-        let (rect, _) = ui.allocate_exact_size(egui::Vec2::splat(300.0), egui::Sense::click());
+        if let (Some(canvas), Some(image)) = (&self.canvas, &self.pixel_data) {
+            let (rect, _) = ui.allocate_exact_size(
+                egui::Vec2::new(image.width() as f32, image.height() as f32),
+                egui::Sense::click(),
+            );
 
-        if let Some(canvas) = &self.canvas {
             let canvas = canvas.clone();
             let callback = egui::PaintCallback {
                 callback: Arc::new(CallbackFn::new(move |_info, painter| {
@@ -120,8 +123,66 @@ struct GlowImageCanvas {
 impl GlowImageCanvas {
     fn new(gl: &glow::Context, width: u32, height: u32, pixel_data: &[u8]) -> Self {
         use glow::HasContext as ctx; // ????
+        let shader_version = if cfg!(target_arch = "wasm32") {
+            "#version 300 es"
+        } else {
+            "#version 330"
+        };
         unsafe {
             let program = gl.create_program().expect("Failed to create program");
+            let (vertex_shader_source, fragment_shader_source) = (
+                r#"
+                    layout (location=0) in vec2 vVertex;
+                    smooth out vec2 vUV;
+                    void main() {
+                        gl_Position = vec4(vVertex*2.0-1,0,1);
+                        vUV = vVertex;
+                    }
+                "#,
+                r#"
+                    out vec4 vFragColor;
+                    smooth in vec2 vUV;
+                    uniform sampler2D textureMap;
+                    void main() {
+                        vFragColor = texture(textureMap, vUV);
+                    }
+                "#,
+            );
+
+            let shader_sources = [
+                (glow::VERTEX_SHADER, vertex_shader_source),
+                (glow::FRAGMENT_SHADER, fragment_shader_source),
+            ];
+
+            let shaders: Vec<NativeShader> = shader_sources
+                .iter()
+                .map(|(shader_type, shader_source)| {
+                    let shader = gl
+                        .create_shader(*shader_type)
+                        .expect("Cannot create shader");
+                    gl.shader_source(shader, &format!("{}\n{}", shader_version, shader_source));
+                    gl.compile_shader(shader);
+                    assert!(
+                        gl.get_shader_compile_status(shader),
+                        "Failed to compile {shader_type}: {}",
+                        gl.get_shader_info_log(shader)
+                    );
+                    gl.attach_shader(program, shader);
+                    shader
+                })
+                .collect();
+
+            gl.link_program(program);
+            if !gl.get_program_link_status(program) {
+                panic!("{}", gl.get_program_info_log(program));
+            }
+
+            // ???
+            for shader in shaders {
+                gl.detach_shader(program, shader);
+                gl.delete_shader(shader);
+            }
+
             let vao = gl.create_vertex_array().expect("Failed to create VAO");
             let vbo = gl.create_buffer().expect("Failed to create VBO");
             let ebo = gl.create_buffer().expect("Failed to create EBO");
@@ -155,26 +216,33 @@ impl GlowImageCanvas {
             gl.bind_texture(glow::TEXTURE_2D, Some(tex));
             let pbo = gl.create_buffer().expect("Failed to create PBO");
             gl.bind_buffer(glow::PIXEL_UNPACK_BUFFER, Some(pbo));
-            // maybe should be *3?
-            gl.buffer_data_size(
-                glow::PIXEL_UNPACK_BUFFER,
-                (width * height * 4) as i32,
-                glow::STREAM_DRAW,
-            );
-            let mapped_buffer = gl.map_buffer_range(
-                glow::PIXEL_UNPACK_BUFFER,
-                0,
-                (width * height * 4) as i32,
-                glow::WRITE_ONLY,
-            );
-            std::ptr::copy_nonoverlapping(
-                pixel_data.as_ptr(),
-                mapped_buffer,
-                (width * height * 4) as usize,
-            );
 
-            gl.bind_buffer(glow::PIXEL_UNPACK_BUFFER, Some(pbo));
-            gl.unmap_buffer(glow::PIXEL_UNPACK_BUFFER);
+            println!("before!");
+            // maybe should be 3?
+            const CHANNELS: u32 = 4;
+            println!("width = {width}, height = {height}");
+            // gl.buffer_data_size(
+            //     glow::PIXEL_UNPACK_BUFFER,
+            //     (width * height * CHANNELS) as i32,
+            //     glow::STREAM_DRAW,
+            // );
+            // let mapped_buffer = gl.map_buffer_range(
+            //     glow::PIXEL_UNPACK_BUFFER,
+            //     0,
+            //     (width * height * CHANNELS) as i32,
+            //     glow::WRITE_ONLY,
+            // );
+            // println!("before!");
+            // std::ptr::copy_nonoverlapping(
+            //     pixel_data.as_ptr(),
+            //     mapped_buffer,
+            //     (width * height * CHANNELS) as usize,
+            // );
+            gl.buffer_data_u8_slice(glow::PIXEL_UNPACK_BUFFER, pixel_data, glow::STREAM_DRAW);
+            println!("after!");
+
+            //gl.bind_buffer(glow::PIXEL_UNPACK_BUFFER, Some(pbo));
+            //gl.unmap_buffer(glow::PIXEL_UNPACK_BUFFER);
             gl.tex_image_2d(
                 glow::TEXTURE_2D,
                 0,
@@ -186,6 +254,7 @@ impl GlowImageCanvas {
                 glow::UNSIGNED_BYTE,
                 None,
             );
+            //gl.generate_mipmap(glow::TEXTURE_2D);
 
             Self {
                 program,
@@ -203,6 +272,10 @@ impl GlowImageCanvas {
             gl.use_program(Some(self.program));
             gl.bind_vertex_array(Some(self.vao));
             gl.bind_texture(glow::TEXTURE_2D, Some(self.tex));
+            gl.uniform_1_i32(
+                gl.get_uniform_location(self.program, "textureMap").as_ref(),
+                0,
+            );
             gl.draw_elements(glow::TRIANGLES, 6, glow::UNSIGNED_INT, 0);
         }
     }
