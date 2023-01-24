@@ -132,16 +132,16 @@ impl GlowImageCanvas {
             let program = gl.create_program().expect("Failed to create program");
             let (vertex_shader_source, fragment_shader_source) = (
                 r#"
-                    layout (location=0) in vec2 vVertex;
-                    smooth out vec2 vUV;
+                    in vec2 vVertex;
+                    out vec2 vUV;
                     void main() {
                         gl_Position = vec4(vVertex*2.0-1,0,1);
                         vUV = vVertex;
                     }
                 "#,
                 r#"
+                    in vec2 vUV;
                     out vec4 vFragColor;
-                    smooth in vec2 vUV;
                     uniform sampler2D textureMap;
                     void main() {
                         vFragColor = texture(textureMap, vUV);
@@ -214,6 +214,21 @@ impl GlowImageCanvas {
             // texture setup
             let tex = gl.create_texture().expect("Failed to create texture");
             gl.bind_texture(glow::TEXTURE_2D, Some(tex));
+
+            gl.tex_parameter_i32(
+                glow::TEXTURE_2D,
+                glow::TEXTURE_MIN_FILTER,
+                glow::LINEAR_MIPMAP_NEAREST as i32,
+            );
+            gl.tex_parameter_i32(
+                glow::TEXTURE_2D,
+                glow::TEXTURE_MAG_FILTER,
+                glow::LINEAR as i32,
+            );
+
+            // gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_S, glow::REPEAT as i32);
+            // gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_T, glow::REPEAT as i32);
+
             let pbo = gl.create_buffer().expect("Failed to create PBO");
             gl.bind_buffer(glow::PIXEL_UNPACK_BUFFER, Some(pbo));
 
@@ -254,7 +269,7 @@ impl GlowImageCanvas {
                 glow::UNSIGNED_BYTE,
                 None,
             );
-            //gl.generate_mipmap(glow::TEXTURE_2D);
+            gl.generate_mipmap(glow::TEXTURE_2D);
 
             Self {
                 program,
