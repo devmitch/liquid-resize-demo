@@ -2,7 +2,7 @@ use std::sync::{Arc, Mutex};
 
 use eframe::egui;
 use egui_glow::CallbackFn;
-use glow::{NativeShader, NativeTexture, NativeVertexArray};
+use glow::{NativeShader, NativeTexture};
 use image::DynamicImage;
 use rfd::FileDialog;
 
@@ -111,7 +111,6 @@ impl eframe::App for LiquidResizeApp {
 
 struct GlowImageCanvas {
     program: glow::Program,
-    vao: NativeVertexArray,
     tex: NativeTexture,
 }
 
@@ -190,8 +189,6 @@ impl GlowImageCanvas {
                 gl.delete_shader(shader);
             }
 
-            let vao = gl.create_vertex_array().expect("Failed to create VAO");
-
             // texture setup
             let tex = gl.create_texture().expect("Failed to create texture");
             gl.bind_texture(glow::TEXTURE_2D, Some(tex));
@@ -225,7 +222,7 @@ impl GlowImageCanvas {
             );
             gl.generate_mipmap(glow::TEXTURE_2D);
 
-            Self { program, vao, tex }
+            Self { program, tex }
         }
     }
 
@@ -233,7 +230,6 @@ impl GlowImageCanvas {
         use glow::HasContext as _;
         unsafe {
             gl.use_program(Some(self.program));
-            gl.bind_vertex_array(Some(self.vao));
             gl.bind_texture(glow::TEXTURE_2D, Some(self.tex));
             gl.uniform_1_i32(
                 gl.get_uniform_location(self.program, "textureMap").as_ref(),
