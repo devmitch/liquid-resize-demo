@@ -20,12 +20,97 @@ fn main() {
     )
 }
 
+enum LoadStatus {
+    NotLoaded,
+    Loaded(String),
+    Error(String),
+}
+
+impl Default for LoadStatus {
+    fn default() -> Self {
+        Self::NotLoaded
+    }
+}
+
+struct ImageBundle {
+    canvas: Arc<Mutex<GlowImageCanvas>>,
+    image: DynamicImage,
+}
+
+impl ImageBundle {
+    fn new(image: DynamicImage, gl: &glow::Context) -> Self {
+        let canvas = Arc::new(Mutex::new(GlowImageCanvas::new(
+            gl,
+            image.width(),
+            image.height(),
+            image.as_bytes(),
+            image.color().has_alpha(),
+        )));
+        Self { canvas, image }
+    }
+    // draw the image data to the canvas
+    fn draw(&self, ui: &mut egui::Ui) {
+        let (rect, _) = ui.allocate_exact_size(
+            // can scale width and height down if image is too big
+            egui::Vec2::new(self.image.width() as f32, self.image.height() as f32),
+            egui::Sense::drag(),
+        );
+
+        let canvas = self.canvas.clone();
+        let callback = egui::PaintCallback {
+            callback: Arc::new(CallbackFn::new(move |_info, painter| {
+                canvas
+                    .lock()
+                    .expect("Failed to grab lock")
+                    .paint(painter.gl());
+            })),
+            rect,
+        };
+        ui.painter().add(callback);
+    }
+
+    // invert the image and update the texture on the GPU
+    fn invert(&mut self, gl: &glow::Context) {
+        self.image.invert(); // done in-place
+        self.canvas
+            .lock()
+            .expect("Failed to grab lock")
+            .update_pixels(
+                gl,
+                self.image.width(),
+                self.image.height(),
+                self.image.as_bytes(),
+                self.image.color().has_alpha(),
+            );
+    }
+
+    // crop the image in half and update the texture on the GPU
+    fn crop_half(&mut self, gl: &glow::Context) {
+        // unfortunately can't be cropped in place with image crate
+        self.image = self
+            .image
+            .crop_imm(0, 0, self.image.width() / 2, self.image.height());
+        self.canvas
+            .lock()
+            .expect("Failed to grab lock")
+            .update_pixels(
+                gl,
+                self.image.width(),
+                self.image.height(),
+                self.image.as_bytes(),
+                self.image.color().has_alpha(),
+            );
+    }
+}
+
 // App state goes here
 #[derive(Default)]
 struct LiquidResizeApp {
-    picked_path: Option<String>,
-    canvas: Option<Arc<Mutex<GlowImageCanvas>>>,
-    pixel_data: Option<DynamicImage>,
+    // picked_path: Option<String>,
+    // canvas: Option<Arc<Mutex<GlowImageCanvas>>>,
+    // pixel_data: Option<DynamicImage>,
+    image_bundle: Option<ImageBundle>,
+    status: LoadStatus,
 }
 
 impl LiquidResizeApp {
@@ -34,59 +119,6 @@ impl LiquidResizeApp {
             .as_ref()
             .expect("eframe not running with glow backend");
         Self::default()
-    }
-
-    fn draw_image(&self, ui: &mut egui::Ui) {
-        if let (Some(canvas), Some(image)) = (&self.canvas, &self.pixel_data) {
-            let (rect, _) = ui.allocate_exact_size(
-                // can scale width and height down if image is too big
-                egui::Vec2::new(image.width() as f32, image.height() as f32),
-                egui::Sense::drag(),
-            );
-
-            let canvas = canvas.clone();
-            let callback = egui::PaintCallback {
-                callback: Arc::new(CallbackFn::new(move |_info, painter| {
-                    canvas
-                        .lock()
-                        .expect("Failed to grab lock")
-                        .paint(painter.gl());
-                })),
-                rect,
-            };
-            ui.painter().add(callback);
-        }
-    }
-
-    fn invert_image(&mut self, gl: &glow::Context) {
-        if let (Some(image), Some(canvas)) = (&mut self.pixel_data, &mut self.canvas) {
-            image.invert();
-            canvas.lock().expect("Failed to grab lock").update_pixels(
-                gl,
-                image.width(),
-                image.height(),
-                image.as_bytes(),
-                image.color().has_alpha(),
-            );
-        }
-    }
-
-    fn crop_image(&mut self, gl: &glow::Context) {
-        self.pixel_data =
-            self.pixel_data
-                .as_mut()
-                .zip(self.canvas.as_mut())
-                .map(|(image, canvas)| {
-                    let new_image = image.crop_imm(0, 0, image.width() / 2, image.height());
-                    canvas.lock().expect("Failed to grab lock").update_pixels(
-                        gl,
-                        new_image.width(),
-                        new_image.height(),
-                        new_image.as_bytes(),
-                        new_image.color().has_alpha(),
-                    );
-                    new_image
-                });
     }
 }
 
@@ -97,49 +129,44 @@ impl eframe::App for LiquidResizeApp {
             ui.heading("Hello");
             if ui.button("Open image").clicked() {
                 if let Some(path) = FileDialog::new().pick_file() {
-                    self.pixel_data = match image::open(&path) {
-                        Ok(mut image) => {
-                            image = image.flipv();
-                            self.picked_path = Some(path.display().to_string());
-                            let new_canvas = Arc::new(Mutex::new(GlowImageCanvas::new(
-                                gl,
-                                image.width(),
-                                image.height(),
-                                image.as_bytes(),
-                                image.color().has_alpha(),
-                            )));
-                            self.canvas = Some(new_canvas);
-                            Some(image)
+                    match image::open(&path) {
+                        Ok(image) => {
+                            //self.picked_path = Some(path.display().to_string());
+                            self.image_bundle = Some(ImageBundle::new(image.flipv(), gl));
+                            let loaded_status = format!("{} loaded!", path.display().to_string());
+                            self.status = LoadStatus::Loaded(loaded_status);
                         }
                         Err(err) => {
                             let file_name = match path.file_name() {
-                                Some(name) => name.to_str().unwrap_or("DECODE ERROR"),
+                                Some(name) => name.to_str().unwrap_or("FILENAME DECODE ERROR"),
                                 None => "..",
                             };
-                            self.picked_path = Some(format!("({}) {}", file_name, err.to_string()));
-                            None
+                            let err = format!("({}): {}", file_name, err.to_string());
+                            self.status = LoadStatus::Error(err);
                         }
                     }
                 }
             }
 
-            if let Some(picked_path) = &self.picked_path {
-                ui.horizontal(|ui| {
-                    ui.label("Status:");
-                    ui.monospace(picked_path);
-                });
-            }
+            ui.horizontal(|ui| {
+                ui.label("Status:");
+                match &self.status {
+                    LoadStatus::NotLoaded => ui.monospace("No images loaded!"),
+                    LoadStatus::Loaded(status) => ui.monospace(status),
+                    LoadStatus::Error(err) => ui.monospace(err),
+                }
+            });
 
-            if self.pixel_data.is_some() {
+            if let Some(image_bundle) = &mut self.image_bundle {
                 egui::Frame::canvas(ui.style()).show(ui, |ui| {
-                    self.draw_image(ui);
+                    image_bundle.draw(ui);
                 });
                 ui.label("image is loaded!");
                 if ui.button("invert").clicked() {
-                    self.invert_image(gl);
+                    image_bundle.invert(gl);
                 }
                 if ui.button("crop").clicked() {
-                    self.crop_image(gl);
+                    image_bundle.crop_half(gl);
                 }
             }
         });
