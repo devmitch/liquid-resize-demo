@@ -32,6 +32,7 @@ impl Default for LoadStatus {
     }
 }
 
+// Bundle that contains image data as well as a canvas to draw it on
 struct ImageBundle {
     canvas: Arc<Mutex<GlowImageCanvas>>,
     image: DynamicImage,
@@ -103,12 +104,9 @@ impl ImageBundle {
     }
 }
 
-// App state goes here
+// Contains main app state
 #[derive(Default)]
 struct LiquidResizeApp {
-    // picked_path: Option<String>,
-    // canvas: Option<Arc<Mutex<GlowImageCanvas>>>,
-    // pixel_data: Option<DynamicImage>,
     image_bundle: Option<ImageBundle>,
     status: LoadStatus,
 }
@@ -131,7 +129,6 @@ impl eframe::App for LiquidResizeApp {
                 if let Some(path) = FileDialog::new().pick_file() {
                     match image::open(&path) {
                         Ok(image) => {
-                            //self.picked_path = Some(path.display().to_string());
                             self.image_bundle = Some(ImageBundle::new(image.flipv(), gl));
                             let loaded_status = format!("{} loaded!", path.display().to_string());
                             self.status = LoadStatus::Loaded(loaded_status);
@@ -173,6 +170,7 @@ impl eframe::App for LiquidResizeApp {
     }
 }
 
+// Glow/OpenGL canvas quad to draw textures on
 struct GlowImageCanvas {
     program: glow::Program,
     tex: NativeTexture,
@@ -290,6 +288,7 @@ impl GlowImageCanvas {
         }
     }
 
+    // Draw the texture previously loaded on the GPU via new() or update_pixels()
     fn paint(&self, gl: &glow::Context) {
         use glow::HasContext as _;
         unsafe {
@@ -303,6 +302,7 @@ impl GlowImageCanvas {
         }
     }
 
+    // Change the pixel data on the texture via Pixelbuffer
     fn update_pixels(
         &mut self,
         gl: &glow::Context,
