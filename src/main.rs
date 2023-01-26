@@ -113,7 +113,7 @@ impl eframe::App for LiquidResizeApp {
                         }
                         Err(err) => {
                             let file_name = match path.file_name() {
-                                Some(name) => name.to_str().unwrap_or(".."),
+                                Some(name) => name.to_str().unwrap_or("DECODE ERROR"),
                                 None => "..",
                             };
                             self.picked_path = Some(format!("({}) {}", file_name, err.to_string()));
