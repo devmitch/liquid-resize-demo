@@ -2,7 +2,7 @@ use std::sync::{Arc, Mutex};
 
 use eframe::egui;
 use egui_glow::CallbackFn;
-use glow::{NativeShader, NativeTexture};
+use glow::{NativeBuffer, NativeShader, NativeTexture};
 use image::DynamicImage;
 use rfd::FileDialog;
 
@@ -57,10 +57,42 @@ impl LiquidResizeApp {
             ui.painter().add(callback);
         }
     }
+
+    fn invert_image(&mut self, gl: &glow::Context) {
+        if let (Some(image), Some(canvas)) = (&mut self.pixel_data, &mut self.canvas) {
+            image.invert();
+            canvas.lock().expect("Failed to grab lock").update_pixels(
+                gl,
+                image.width(),
+                image.height(),
+                image.as_bytes(),
+                image.color().has_alpha(),
+            );
+        }
+    }
+
+    fn crop_image(&mut self, gl: &glow::Context) {
+        self.pixel_data =
+            self.pixel_data
+                .as_mut()
+                .zip(self.canvas.as_mut())
+                .map(|(image, canvas)| {
+                    let new_image = image.crop_imm(0, 0, image.width() / 2, image.height());
+                    canvas.lock().expect("Failed to grab lock").update_pixels(
+                        gl,
+                        new_image.width(),
+                        new_image.height(),
+                        new_image.as_bytes(),
+                        new_image.color().has_alpha(),
+                    );
+                    new_image
+                });
+    }
 }
 
 impl eframe::App for LiquidResizeApp {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        let gl = frame.gl().expect("eframe not running with glow backend");
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("Hello");
             if ui.button("Open image").clicked() {
@@ -69,7 +101,6 @@ impl eframe::App for LiquidResizeApp {
                         Ok(mut image) => {
                             image = image.flipv();
                             self.picked_path = Some(path.display().to_string());
-                            let gl = frame.gl().expect("eframe not running with glow backend");
                             let new_canvas = Arc::new(Mutex::new(GlowImageCanvas::new(
                                 gl,
                                 image.width(),
@@ -104,6 +135,12 @@ impl eframe::App for LiquidResizeApp {
                     self.draw_image(ui);
                 });
                 ui.label("image is loaded!");
+                if ui.button("invert").clicked() {
+                    self.invert_image(gl);
+                }
+                if ui.button("crop").clicked() {
+                    self.crop_image(gl);
+                }
             }
         });
     }
@@ -112,6 +149,7 @@ impl eframe::App for LiquidResizeApp {
 struct GlowImageCanvas {
     program: glow::Program,
     tex: NativeTexture,
+    pbo: NativeBuffer,
 }
 
 impl GlowImageCanvas {
@@ -196,7 +234,7 @@ impl GlowImageCanvas {
             gl.tex_parameter_i32(
                 glow::TEXTURE_2D,
                 glow::TEXTURE_MIN_FILTER,
-                glow::LINEAR_MIPMAP_NEAREST as i32,
+                glow::NEAREST as i32,
             );
             gl.tex_parameter_i32(
                 glow::TEXTURE_2D,
@@ -220,9 +258,8 @@ impl GlowImageCanvas {
                 glow::UNSIGNED_BYTE,
                 None,
             );
-            gl.generate_mipmap(glow::TEXTURE_2D);
 
-            Self { program, tex }
+            Self { program, tex, pbo }
         }
     }
 
@@ -236,6 +273,35 @@ impl GlowImageCanvas {
                 0,
             );
             gl.draw_arrays(glow::TRIANGLES, 0, 6);
+        }
+    }
+
+    fn update_pixels(
+        &mut self,
+        gl: &glow::Context,
+        width: u32,
+        height: u32,
+        pixel_data: &[u8],
+        has_alpha: bool,
+    ) {
+        use glow::HasContext as _;
+        unsafe {
+            gl.bind_texture(glow::TEXTURE_2D, Some(self.tex));
+            gl.bind_buffer(glow::PIXEL_UNPACK_BUFFER, Some(self.pbo));
+            gl.buffer_data_u8_slice(glow::PIXEL_UNPACK_BUFFER, pixel_data, glow::STREAM_DRAW);
+
+            let format = if has_alpha { glow::RGBA } else { glow::RGB };
+            gl.tex_image_2d(
+                glow::TEXTURE_2D,
+                0,
+                format as i32,
+                width as i32,
+                height as i32,
+                0,
+                format,
+                glow::UNSIGNED_BYTE,
+                None,
+            );
         }
     }
 }
