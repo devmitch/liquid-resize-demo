@@ -1,14 +1,14 @@
 use std::{
     sync::{Arc, Mutex},
     thread,
-    time::{Duration, Instant},
+    time::Instant,
 };
 
 use algorithms::OriginalAlgo;
-use eframe::egui::{self, Image};
+use eframe::egui::{self};
 use egui_glow::CallbackFn;
 use glow::{NativeBuffer, NativeShader, NativeTexture};
-use image::{DynamicImage, GenericImage, GenericImageView, ImageBuffer, Pixel, Rgb, Rgba};
+use image::DynamicImage;
 use rfd::FileDialog;
 
 fn main() {
@@ -46,14 +46,14 @@ struct CarvingEngine {
 }
 
 impl CarvingEngine {
-    fn new(mut image: DynamicImage, gl: &glow::Context) -> Self {
+    fn new(image: DynamicImage, gl: &glow::Context) -> Self {
         let pixels_rgb8: Vec<[u8; 3]> = image
             .to_rgb8()
             .pixels()
             .map(|x| [x[0], x[1], x[2]])
             .collect();
 
-        let mut algo = Arc::new(Mutex::new(OriginalAlgo::new(
+        let algo = Arc::new(Mutex::new(OriginalAlgo::new(
             pixels_rgb8,
             image.width(),
             image.height(),
@@ -123,14 +123,9 @@ impl CarvingEngine {
         thread::spawn(move || {
             let process_start = Instant::now();
             let mut algo = algo.lock().unwrap();
-            for carve_iteration in 0..width - 10 {
+            for _carve_iteration in 0..width - 10 {
                 let removed_incices = algo.remove_vertical_seam();
                 removed_seams.lock().unwrap().push(removed_incices);
-                // println!(
-                //     "carve_iteration = {} took {:?} long",
-                //     carve_iteration,
-                //     start.elapsed()
-                // );
             }
             println!("entire carve took {:?}", process_start.elapsed());
         });
