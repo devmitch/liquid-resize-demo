@@ -1,9 +1,14 @@
-use std::sync::{Arc, Mutex};
+use std::{
+    borrow::BorrowMut,
+    sync::{Arc, Mutex},
+    time::Instant,
+};
 
+use algorithms::OriginalAlgo;
 use eframe::egui;
 use egui_glow::CallbackFn;
 use glow::{NativeBuffer, NativeShader, NativeTexture};
-use image::DynamicImage;
+use image::{DynamicImage, GenericImage, GenericImageView, Pixel, Rgb, Rgba};
 use rfd::FileDialog;
 
 fn main() {
@@ -17,7 +22,7 @@ fn main() {
         "Liquid Resize Demo",
         native_options,
         Box::new(|cc| Box::new(LiquidResizeApp::new(cc))),
-    )
+    );
 }
 
 enum LoadStatus {
@@ -36,10 +41,38 @@ impl Default for LoadStatus {
 struct ImageBundle {
     canvas: Arc<Mutex<GlowImageCanvas>>,
     image: DynamicImage,
+    algo: OriginalAlgo,
 }
 
 impl ImageBundle {
-    fn new(image: DynamicImage, gl: &glow::Context) -> Self {
+    fn new(mut image: DynamicImage, gl: &glow::Context) -> Self {
+        let pixels_rgb8: Vec<[u8; 3]> = image
+            .to_rgb8()
+            .pixels()
+            .map(|x| [x[0], x[1], x[2]])
+            .collect();
+        let start = Instant::now();
+        let mut algo = OriginalAlgo::new(pixels_rgb8, image.width(), image.height());
+        let seam = algo.remove_vertical_seam();
+        let mut i = 0;
+        // for (x, y, pixel) in image.pixels() {
+        //     if x == i && seam[x as usize] == y {
+        //         image.put_pixel(x, y, pixel.map(|x| 0));
+        //     }
+        // }
+        for row in 0..image.height() {
+            for col in 0..image.width() {
+                if image.width() * row + col == seam[i] {
+                    let pix = image.get_pixel(col, row);
+                    image.put_pixel(col, row, pix.map(|x| 0));
+                    i += 1;
+                    if i as u32 == image.height() {
+                        break;
+                    }
+                }
+            }
+        }
+
         let canvas = Arc::new(Mutex::new(GlowImageCanvas::new(
             gl,
             image.width(),
@@ -47,8 +80,15 @@ impl ImageBundle {
             image.as_bytes(),
             image.color().has_alpha(),
         )));
-        Self { canvas, image }
+        println!("total time: {:?}", start.elapsed());
+
+        Self {
+            canvas,
+            image,
+            algo,
+        }
     }
+
     // draw the image data to the canvas
     fn draw(&self, ui: &mut egui::Ui) {
         let (rect, _) = ui.allocate_exact_size(
