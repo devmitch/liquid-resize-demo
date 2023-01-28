@@ -1,4 +1,4 @@
-use std::{cmp::min, time::Instant};
+use std::cmp::min;
 
 pub struct OriginalAlgo {
     pixels: Vec<[u8; 3]>,
@@ -21,7 +21,6 @@ impl OriginalAlgo {
     }
 
     pub fn remove_vertical_seam(&mut self) -> Vec<u32> {
-        let start = Instant::now();
         let energy_matrix = self.calculate_energy_matrix();
         let mut dp: Vec<u32> = Vec::with_capacity((self.width * self.height) as usize);
         dp.extend(&energy_matrix[0..self.width as usize]);
@@ -54,26 +53,14 @@ impl OriginalAlgo {
             self.index_of(self.height - 1, 0),
             self.index_of(self.height - 1, self.width - 1),
         );
-        // let (mut prev_idx, en) = dp[self.index_of(self.height - 1, 0)..]
-        //     .iter()
-        //     .enumerate()
-        //     .max_by_key(|(_i, en)| *en)
-        //     .map(|(i, en)| (i as u32, en))
-        //     .unwrap();
-        // to_remove.push(*en);
         for row in (0..self.height).rev() {
-            //println!("range = {} - {}", lo, hi);
-            let (new_idx, en) = dp[lo..=hi]
+            let new_idx = dp[lo..=hi]
                 .iter()
                 .enumerate()
                 .min_by_key(|(_i, en)| *en)
-                .map(|(i, en)| ((lo + i) as u32, en))
+                .map(|(i, _en)| (lo + i) as u32)
                 .unwrap();
             to_remove.push(new_idx);
-            // println!(
-            //     "new_idx = {}, en = {}, width = {}, height = {}",
-            //     new_idx, *en, self.width, self.height
-            // );
             if row != 0 {
                 (lo, hi) = if new_idx == self.index_of(row, 0) as u32 {
                     (self.index_of(row - 1, 0), self.index_of(row - 1, 1))
@@ -91,7 +78,22 @@ impl OriginalAlgo {
             }
         }
         to_remove.reverse();
-        println!("seam carve frame time: {:?}", start.elapsed());
+        let mut k = 0;
+        self.pixels = self
+            .pixels
+            .iter()
+            .enumerate()
+            .filter(|(i, _pix)| {
+                if k != to_remove.len() && *i == to_remove[k] as usize {
+                    k += 1;
+                    false
+                } else {
+                    true
+                }
+            })
+            .map(|(_i, x)| *x)
+            .collect();
+        self.width -= 1;
         to_remove
     }
 

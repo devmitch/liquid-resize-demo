@@ -1,0 +1,2 @@
+implement first seam carving algo
+cut down on DynamicImage - new struct that only contains width, height, and pixel data [u8]

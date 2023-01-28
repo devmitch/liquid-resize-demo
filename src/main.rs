@@ -1,14 +1,14 @@
 use std::{
-    borrow::BorrowMut,
     sync::{Arc, Mutex},
-    time::Instant,
+    thread,
+    time::{Duration, Instant},
 };
 
 use algorithms::OriginalAlgo;
-use eframe::egui;
+use eframe::egui::{self, Image};
 use egui_glow::CallbackFn;
 use glow::{NativeBuffer, NativeShader, NativeTexture};
-use image::{DynamicImage, GenericImage, GenericImageView, Pixel, Rgb, Rgba};
+use image::{DynamicImage, GenericImage, GenericImageView, ImageBuffer, Pixel, Rgb, Rgba};
 use rfd::FileDialog;
 
 fn main() {
@@ -37,41 +37,29 @@ impl Default for LoadStatus {
     }
 }
 
-// Bundle that contains image data as well as a canvas to draw it on
-struct ImageBundle {
+// (write description)
+struct CarvingEngine {
     canvas: Arc<Mutex<GlowImageCanvas>>,
     image: DynamicImage,
-    algo: OriginalAlgo,
+    algo: Arc<Mutex<OriginalAlgo>>,
+    removed_seams: Arc<Mutex<Vec<Vec<u32>>>>,
 }
 
-impl ImageBundle {
+impl CarvingEngine {
     fn new(mut image: DynamicImage, gl: &glow::Context) -> Self {
         let pixels_rgb8: Vec<[u8; 3]> = image
             .to_rgb8()
             .pixels()
             .map(|x| [x[0], x[1], x[2]])
             .collect();
-        let start = Instant::now();
-        let mut algo = OriginalAlgo::new(pixels_rgb8, image.width(), image.height());
-        let seam = algo.remove_vertical_seam();
-        let mut i = 0;
-        // for (x, y, pixel) in image.pixels() {
-        //     if x == i && seam[x as usize] == y {
-        //         image.put_pixel(x, y, pixel.map(|x| 0));
-        //     }
-        // }
-        for row in 0..image.height() {
-            for col in 0..image.width() {
-                if image.width() * row + col == seam[i] {
-                    let pix = image.get_pixel(col, row);
-                    image.put_pixel(col, row, pix.map(|x| 0));
-                    i += 1;
-                    if i as u32 == image.height() {
-                        break;
-                    }
-                }
-            }
-        }
+
+        let mut algo = Arc::new(Mutex::new(OriginalAlgo::new(
+            pixels_rgb8,
+            image.width(),
+            image.height(),
+        )));
+
+        let removed_seams = Arc::new(Mutex::new(Vec::new()));
 
         let canvas = Arc::new(Mutex::new(GlowImageCanvas::new(
             gl,
@@ -80,20 +68,82 @@ impl ImageBundle {
             image.as_bytes(),
             image.color().has_alpha(),
         )));
-        println!("total time: {:?}", start.elapsed());
 
-        Self {
+        let mut ret = Self {
             canvas,
             image,
             algo,
+            removed_seams,
+        };
+
+        ret.run_engine();
+        ret
+    }
+
+    fn remove_seams(&mut self, gl: &glow::Context, num_seams: u32) {
+        let start = Instant::now();
+        let mut pixel_data: Vec<[u8; 3]> = self
+            .image
+            .to_rgb8()
+            .pixels()
+            .map(|x| [x[0], x[1], x[2]])
+            .collect();
+        for i in 0..num_seams {
+            let mut k = 0;
+            let to_remove = &self.removed_seams.lock().unwrap()[i as usize];
+            pixel_data = pixel_data
+                .iter()
+                .enumerate()
+                .filter(|(i, _pix)| {
+                    if k != to_remove.len() && *i == to_remove[k] as usize {
+                        k += 1;
+                        false
+                    } else {
+                        true
+                    }
+                })
+                .map(|(_i, pix)| *pix)
+                .collect();
         }
+        let flat: Vec<u8> = pixel_data.into_iter().flatten().collect();
+        self.canvas.lock().unwrap().update_pixels(
+            gl,
+            self.image.width() - num_seams,
+            self.image.height(),
+            &flat,
+            false,
+        );
+        println!("removing {} seams took {:?}", num_seams, start.elapsed());
+    }
+
+    fn run_engine(&mut self) {
+        let width = self.image.width().clone();
+        let algo = self.algo.clone();
+        let removed_seams = self.removed_seams.clone();
+        thread::spawn(move || {
+            let process_start = Instant::now();
+            let mut algo = algo.lock().unwrap();
+            for carve_iteration in 0..width - 10 {
+                let removed_incices = algo.remove_vertical_seam();
+                removed_seams.lock().unwrap().push(removed_incices);
+                // println!(
+                //     "carve_iteration = {} took {:?} long",
+                //     carve_iteration,
+                //     start.elapsed()
+                // );
+            }
+            println!("entire carve took {:?}", process_start.elapsed());
+        });
     }
 
     // draw the image data to the canvas
-    fn draw(&self, ui: &mut egui::Ui) {
+    fn draw(&self, ui: &mut egui::Ui, seams_removed: u32) {
         let (rect, _) = ui.allocate_exact_size(
             // can scale width and height down if image is too big
-            egui::Vec2::new(self.image.width() as f32, self.image.height() as f32),
+            egui::Vec2::new(
+                (self.image.width() - seams_removed) as f32,
+                self.image.height() as f32,
+            ),
             egui::Sense::drag(),
         );
 
@@ -109,46 +159,14 @@ impl ImageBundle {
         };
         ui.painter().add(callback);
     }
-
-    // invert the image and update the texture on the GPU
-    fn invert(&mut self, gl: &glow::Context) {
-        self.image.invert(); // done in-place
-        self.canvas
-            .lock()
-            .expect("Failed to grab lock")
-            .update_pixels(
-                gl,
-                self.image.width(),
-                self.image.height(),
-                self.image.as_bytes(),
-                self.image.color().has_alpha(),
-            );
-    }
-
-    // crop the image in half and update the texture on the GPU
-    fn crop_half(&mut self, gl: &glow::Context) {
-        // unfortunately can't be cropped in place with image crate
-        self.image = self
-            .image
-            .crop_imm(0, 0, self.image.width() / 2, self.image.height());
-        self.canvas
-            .lock()
-            .expect("Failed to grab lock")
-            .update_pixels(
-                gl,
-                self.image.width(),
-                self.image.height(),
-                self.image.as_bytes(),
-                self.image.color().has_alpha(),
-            );
-    }
 }
 
 // Contains main app state
 #[derive(Default)]
 struct LiquidResizeApp {
-    image_bundle: Option<ImageBundle>,
+    image_bundle: Option<CarvingEngine>,
     status: LoadStatus,
+    slider_value: u32,
 }
 
 impl LiquidResizeApp {
@@ -164,12 +182,12 @@ impl eframe::App for LiquidResizeApp {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         let gl = frame.gl().expect("eframe not running with glow backend");
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("Hello");
+            ui.heading("Liquid Resize (Seam Carving) Demonstration");
             if ui.button("Open image").clicked() {
                 if let Some(path) = FileDialog::new().pick_file() {
                     match image::open(&path) {
                         Ok(image) => {
-                            self.image_bundle = Some(ImageBundle::new(image.flipv(), gl));
+                            self.image_bundle = Some(CarvingEngine::new(image.flipv(), gl));
                             let loaded_status = format!("{} loaded!", path.display().to_string());
                             self.status = LoadStatus::Loaded(loaded_status);
                         }
@@ -196,15 +214,23 @@ impl eframe::App for LiquidResizeApp {
 
             if let Some(image_bundle) = &mut self.image_bundle {
                 egui::Frame::canvas(ui.style()).show(ui, |ui| {
-                    image_bundle.draw(ui);
+                    image_bundle.draw(ui, self.slider_value);
                 });
                 ui.label("image is loaded!");
-                if ui.button("invert").clicked() {
-                    image_bundle.invert(gl);
-                }
-                if ui.button("crop").clicked() {
-                    image_bundle.crop_half(gl);
-                }
+
+                let seams_removed = image_bundle.removed_seams.lock().unwrap().len();
+                ui.label(format!(
+                    "carving progress: {}%",
+                    ((seams_removed * 100) as f32 / (image_bundle.image.width() - 10) as f32)
+                        as u32
+                ));
+
+                let slider = egui::Slider::new(&mut self.slider_value, 0..=seams_removed as u32)
+                    .text("slide to preview interpolation (normal resize), release to carve")
+                    .show_value(false); // turn to false?
+                if ui.add(slider).drag_released() {
+                    image_bundle.remove_seams(gl, self.slider_value);
+                };
             }
         });
     }
